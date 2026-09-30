@@ -49,6 +49,10 @@ TAG_EMOJIS = [
 # instead of everyone crammed into a single message.
 MENTIONS_PER_MESSAGE = 5
 
+# Tracks which chats currently have a /tagall running, so /canceltagall
+# can find and stop it. Keyed by chat_id -> True while running.
+_running_tags: dict[int, bool] = {}
+
 
 async def _is_group_admin(message: Message) -> bool:
     """Return True if the message sender is an admin/creator of this chat."""
@@ -68,7 +72,8 @@ async def tagall_command(_, m: Message) -> None:
     """Tag every member of the group, admin-only. Each mention is shown
     as a cute emoji you can tap to open that member's profile. The
     custom text (if given) repeats on every batch message, followed by
-    a "Tagged: X-Y" range, and a final summary once everyone is done."""
+    a "Tagged: X-Y" range, and a final summary once everyone is done.
+    Can be stopped early with /canceltagall."""
 
     if not m.from_user:
         return
@@ -78,11 +83,19 @@ async def tagall_command(_, m: Message) -> None:
             "\u274c Only group admins can use this command."
         )
 
+    if _running_tags.get(m.chat.id):
+        return await m.reply_text(
+            "\u26a0\ufe0f A tagall is already running in this chat. "
+            "Use /canceltagall to stop it first."
+        )
+
     custom_text = ""
     if len(m.command) > 1:
         custom_text = m.text.split(None, 1)[1]
 
-    await m.reply_text("Tagging everyone, please wait...")
+    await m.reply_text(
+        "Tagging everyone, please wait... (use /canceltagall to stop)"
+    )
 
     mentions = []
     emoji_index = 0
@@ -104,28 +117,64 @@ async def tagall_command(_, m: Message) -> None:
         return await m.reply_text("No members found to tag.")
 
     total = len(mentions)
+    _running_tags[m.chat.id] = True
 
-    for i in range(0, total, MENTIONS_PER_MESSAGE):
-        chunk = mentions[i:i + MENTIONS_PER_MESSAGE]
-        start = i + 1
-        end = i + len(chunk)
+    try:
+        tagged_count = 0
+        for i in range(0, total, MENTIONS_PER_MESSAGE):
+            if not _running_tags.get(m.chat.id):
+                await m.reply_text(
+                    f"\u26d4 Tagging cancelled.\n"
+                    f"<b>Total tagged before stopping:</b> {tagged_count}"
+                )
+                return
 
-        parts = []
-        if custom_text:
-            parts.append(custom_text)
-        parts.append(" ".join(chunk))
-        parts.append(f"<b>Tagged: {start}-{end}</b>")
-        text = "\n\n".join(parts)
+            chunk = mentions[i:i + MENTIONS_PER_MESSAGE]
+            start = i + 1
+            end = i + len(chunk)
 
-        while True:
-            try:
-                await m.reply_text(text)
-                break
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
+            parts = []
+            if custom_text:
+                parts.append(custom_text)
+            parts.append(" ".join(chunk))
+            parts.append(f"<b>Tagged: {start}-{end}</b>")
+            text = "\n\n".join(parts)
 
-        await asyncio.sleep(1)
+            while True:
+                try:
+                    await m.reply_text(text)
+                    break
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
 
-    await m.reply_text(
-        f"\u2705 Tagging complete!\n<b>Total tagged:</b> {total}"
-    )
+            tagged_count = end
+            await asyncio.sleep(1)
+
+        await m.reply_text(
+            f"\u2705 Tagging complete!\n<b>Total tagged:</b> {total}"
+        )
+    finally:
+        _running_tags.pop(m.chat.id, None)
+
+
+@app.on_message(
+    filters.command(["canceltagall"])
+    & filters.group
+    & ~app.bl_users
+)
+async def cancel_tagall_command(_, m: Message) -> None:
+    """Stop a /tagall that's currently running in this chat. Admin-only."""
+
+    if not m.from_user:
+        return
+
+    if not await _is_group_admin(m):
+        return await m.reply_text(
+            "\u274c Only group admins can use this command."
+        )
+
+    if not _running_tags.get(m.chat.id):
+        return await m.reply_text("There's no tagall running right now.")
+
+    _running_tags[m.chat.id] = False
+    await m.reply_text("\U0001F6D1 Stopping tagall...")
