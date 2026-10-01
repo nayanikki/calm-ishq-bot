@@ -195,14 +195,14 @@ class Inline:
                 ),
                 self.ikb(
                     text="\U0001F98B Support",
-                    url="https://t.me/nightbloomsgc",
+                    url="https://t.me/haramkhoro_87",
                     style=ButtonStyle.SUCCESS,
                 ),
             ],
             [
                 self.ikb(
                     text="\U0001F319 Updates",
-                    url="https://t.me/pixiiela",
+                    url="https://t.me/chhikuumaa",
                     style=ButtonStyle.PRIMARY,
                 ),
                 self.ikb(
