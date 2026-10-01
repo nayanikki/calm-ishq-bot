@@ -45,8 +45,8 @@ class Config:
         self.SESSION3: str = getenv("STRING_SESSION3", "")
 
         # Support Links
-        self.SUPPORT_CHANNEL: str = getenv("SUPPORT_CHANNEL", "https://telegram.me/nighttblooms")
-        self.SUPPORT_CHAT: str = getenv("SUPPORT_CHAT", "https://telegram.me/always_youuh")
+        self.SUPPORT_CHANNEL: str = getenv("SUPPORT_CHANNEL", "https://t.me/chhikuumaa")
+        self.SUPPORT_CHAT: str = getenv("SUPPORT_CHAT", "https://t.me/haramkhoro_87")
 
         # Excluded Chats
         self.EXCLUDED_CHATS: List[int] = self._parse_excluded_chats()
@@ -80,9 +80,9 @@ class Config:
         self.COOKIES_URL: List[str] = self._parse_cookies()
 
         # Images
-        self.DEFAULT_THUMB: str = getenv("DEFAULT_THUMB", "https://litter.catbox.moe/pi6brrhl2f82zrwv.jpg")
-        self.PING_IMG: str = getenv("PING_IMG", "https://files.catbox.moe/fjbj4g.jpg")
-        self.START_IMG: str = getenv("START_IMG", "https://files.catbox.moe/vnl0a4.jpg")
+        self.DEFAULT_THUMB: str = getenv("DEFAULT_THUMB", "https://files.catbox.moe/t5n8d2.jpg")
+        self.PING_IMG: str = getenv("PING_IMG", "https://files.catbox.moe/t5n8d2.jpg")
+        self.START_IMG: str = getenv("START_IMG", "https://files.catbox.moe/4cw15b.jpg")
         self.RADIO_IMG: str = getenv("RADIO_IMG", "https://litter.catbox.moe/pi6brrhl2f82zrwv.jpg")
 
         # Moderation
