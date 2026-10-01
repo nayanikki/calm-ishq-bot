@@ -190,7 +190,7 @@ class Inline:
             [
                 self.ikb(
                     text="\U0001FA84 Dev",
-                    url="https://t.me/pixieiii",
+                    url="https://t.me/sexeist_beb",
                     style=ButtonStyle.SUCCESS,
                 ),
                 self.ikb(
