@@ -111,6 +111,9 @@ class Inline:
                     self.ikb(text="ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ", callback_data="help_maintenance", style=ButtonStyle.PRIMARY),
                 ],
                 [
+                    self.ikb(text="ᴛᴀɢ ᴀʟʟ", callback_data="tagall_info", style=ButtonStyle.PRIMARY),
+                ],
+                [
                     self.ikb(text="ʙᴀᴄᴋ", callback_data="start", style=ButtonStyle.SUCCESS),
                 ]
             ]
@@ -179,25 +182,32 @@ class Inline:
         rows = [
             [
                 self.ikb(
-                    text="Owner ♛",
-                    url="https://t.me/pixieiii",
-                    style=ButtonStyle.SUCCESS,
-                ),
-                self.ikb(
-                    text="Help ?",
-                    callback_data="help",
+                    text="\U0001FAC2 Take Me Home",
+                    url=f"https://t.me/{app.username}",
                     style=ButtonStyle.SUCCESS,
                 ),
             ],
             [
                 self.ikb(
-                    text="Support ↝",
-                    url="https://t.me/nighttblooms",
+                    text="\U0001FA84 Dev",
+                    url="https://t.me/pixieiii",
+                    style=ButtonStyle.SUCCESS,
+                ),
+                self.ikb(
+                    text="\U0001F98B Support",
+                    url="https://t.me/nightbloomsgc",
+                    style=ButtonStyle.SUCCESS,
+                ),
+            ],
+            [
+                self.ikb(
+                    text="\U0001F319 Updates",
+                    url="https://t.me/pixiiela",
                     style=ButtonStyle.PRIMARY,
                 ),
                 self.ikb(
-                    text="Add Me ✚",
-                    url=f"https://t.me/{app.username}?startgroup=true",
+                    text="\U0001F380 Help",
+                    callback_data="help",
                     style=ButtonStyle.PRIMARY,
                 ),
             ],
@@ -212,4 +222,4 @@ class Inline:
                     self.ikb(text="ᴏᴘᴇɴ ɪɴ ʏᴏᴜᴛᴜʙᴇ", url=link, style=ButtonStyle.PRIMARY),
                 ],
             ]
-                    )
+    )
