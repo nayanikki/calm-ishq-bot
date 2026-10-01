@@ -18,7 +18,7 @@ import asyncio
 from pyrogram import filters
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import FloodWait
-from pyrogram.types import Message
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from Elevenyts import app
 
@@ -52,6 +52,27 @@ MENTIONS_PER_MESSAGE = 5
 # Tracks which chats currently have a /tagall running, so /canceltagall
 # can find and stop it. Keyed by chat_id -> True while running.
 _running_tags: dict[int, bool] = {}
+
+TAGALL_INFO_TEXT = (
+    "\U0001F338 <b>Tag All — how it works</b>\n\n"
+    "<b>/tagall</b>\n"
+    "Tags every member of the group. Each person shows up as a cute "
+    "flower/animal emoji you can tap to open their profile.\n\n"
+    "<b>/tagall your message here</b>\n"
+    "Same as above, but your message is repeated above the emoji in "
+    "every batch.\n\n"
+    "Members are tagged in small batches (5 per message), one message "
+    "after another, so the group doesn't get one giant wall of text. "
+    "Each batch shows which numbers were just tagged, e.g. "
+    "<b>Tagged: 1-5</b>, <b>Tagged: 6-10</b>, and so on. A final "
+    "\u2705 <b>Tagging complete!</b> message shows the total once "
+    "everyone has been tagged.\n\n"
+    "<b>/canceltagall</b>\n"
+    "Stops a tagall that's currently in progress. Send this any time "
+    "while it's running and it will finish the batch it's on, then "
+    "stop instead of continuing to the next group of members.\n\n"
+    "Only group admins/owner can use either command."
+)
 
 
 async def _is_group_admin(message: Message) -> bool:
@@ -178,3 +199,19 @@ async def cancel_tagall_command(_, m: Message) -> None:
 
     _running_tags[m.chat.id] = False
     await m.reply_text("\U0001F6D1 Stopping tagall...")
+
+
+@app.on_callback_query(filters.regex("^tagall_info$"))
+async def tagall_info_callback(_, cq: CallbackQuery) -> None:
+    """Shown when the TAG ALL button in the help menu is tapped."""
+    back_button = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(text="\u2b05 Back", callback_data="help_main")]]
+    )
+    try:
+        if cq.message.photo:
+            await cq.message.edit_caption(TAGALL_INFO_TEXT, reply_markup=back_button)
+        else:
+            await cq.message.edit_text(TAGALL_INFO_TEXT, reply_markup=back_button)
+    except Exception:
+        pass
+    await cq.answer()
