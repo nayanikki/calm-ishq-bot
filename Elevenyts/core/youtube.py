@@ -217,10 +217,10 @@ class YouTube:
         Build the (endpoint, params, headers) for providers that expose
         a direct binary /download-style endpoint (used for Sparrow and
         Shrutibots, and as a generic fallback for any other provider).
-        OneGrab/Fallen and Yuki API are handled separately (see
-        _download_via_onegrab and _download_via_yukiapi) because they
-        return JSON metadata first, not a binary payload on a single
-        /download route.
+        OneGrab/Fallen is handled separately (see _download_via_onegrab)
+        because it returns JSON metadata first, not a binary payload on
+        a single /download route. Yuki API uses a direct /stream route
+        (see _download_via_yukiapi).
         """
         host = api_url.lower()
 
@@ -449,80 +449,22 @@ class YouTube:
 
     async def _download_via_yukiapi(self, api_url: str, api_key: str, link: str, video: bool, file_path: str, video_id: str) -> Optional[str]:
         """
-        Yuki API flow (music.yukiapi.site), per its published API_DOCS.md:
-        1. GET /download?url=<link>&type=audio|video
-           -> JSON {"status":"success","video_id":"...","download_token":"..."}
-        2. GET /stream/{video_id}?token=<download_token>&type=audio|video
-           -> binary media stream, saved to disk.
+        Yuki API flow (music.yukiapi.site) — single-step direct stream:
+        GET /stream/{video_id}?key=<api_key>&type=audio|video
+        -> binary media stream, saved to disk directly.
 
-        NOTE: the server's own "video_id" field in the /download response
-        is unreliable — it sometimes echoes back the ID from a previous,
-        unrelated request instead of the one just resolved. We already
-        know the correct video_id (it's passed in from the caller), so
-        the stream step uses OUR video_id, never the one the API echoes
-        back — this prevents the wrong song's audio being downloaded
-        under the right song's filename.
+        NOTE: this replaces an earlier two-step /download -> token ->
+        /stream flow that was unreliable (the server would sometimes
+        reject its own freshly-issued token as "invalid or expired"),
+        causing random mid-session failures. The single-step /stream
+        call with just the api_key removes that failure point entirely.
         """
         download_type = "video" if video else "audio"
-        resolve_endpoint = f"{api_url}/download"
-        resolve_params = {"url": link, "type": download_type, "api_key": api_key, "key": api_key}
-        resolve_headers = {
-            "X-API-Key": api_key,
-            "Authorization": f"Bearer {api_key}",
-        }
-
-        logger.info(f"Calling API: {resolve_endpoint}")
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    resolve_endpoint,
-                    params=resolve_params,
-                    headers=resolve_headers,
-                    timeout=aiohttp.ClientTimeout(total=self.api_timeout),
-                ) as response:
-                    logger.info(f"API response status: {response.status}")
-
-                    if response.status != 200:
-                        try:
-                            error_text = await response.text()
-                            logger.error(f"API returned status {response.status}: {error_text[:200]}")
-                        except Exception:
-                            logger.error(f"API returned status {response.status}")
-                        return None
-
-                    try:
-                        payload = await response.json(content_type=None)
-                    except Exception as e:
-                        logger.error(f"Failed to parse JSON response from API: {e}")
-                        return None
-        except asyncio.TimeoutError:
-            logger.error(f"⏰ API timeout for {video_id} after {self.api_timeout} seconds")
-            return None
-        except aiohttp.ClientError as e:
-            logger.error(f"🌐 API client error for {video_id}: {e}")
-            return None
-
-        download_token = payload.get("download_token") if isinstance(payload, dict) else None
-        if not download_token:
-            logger.error(f"API /download response missing download_token: {payload}")
-            return None
-
-        server_video_id = payload.get("video_id") if isinstance(payload, dict) else None
-        if server_video_id and server_video_id != video_id:
-            logger.warning(
-                f"API echoed a different video_id ({server_video_id}) than requested "
-                f"({video_id}) — using our own video_id for the stream step to avoid "
-                f"downloading the wrong song."
-            )
-
-        # Always use OUR video_id here, never payload's — see docstring above.
         stream_endpoint = f"{api_url}/stream/{video_id}"
-        stream_params = {"token": download_token, "type": download_type, "api_key": api_key, "key": api_key}
+        stream_params = {"key": api_key, "type": download_type}
         stream_headers = {
             "X-API-Key": api_key,
             "Authorization": f"Bearer {api_key}",
-            "X-Download-Token": download_token,
         }
 
         logger.info(f"Calling API: {stream_endpoint}")
