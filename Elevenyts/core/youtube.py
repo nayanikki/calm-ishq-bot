@@ -277,33 +277,77 @@ class YouTube:
     @staticmethod
     def _looks_like_text_error(data: bytes) -> bool:
         """Sniff a chunk of bytes to see if it's actually text/JSON/HTML
-        (an error body or a webpage) rather than binary audio/video
-        data. Real MP3/M4A files start with binary frame headers,
-        never with '{', '[', '<', or a run of plain ASCII text."""
+        (an error body or a webpage) rather than real audio/video data.
+
+        First checks for known binary audio/video magic numbers (ID3,
+        raw MPEG frame sync, WebM/EBML, OGG, WAV, FLAC, MP4/M4A ftyp) —
+        if any match, it's real media and this returns False
+        immediately. Only files that DON'T match a known media
+        signature are then checked for being mostly printable text
+        (which is what JSON/HTML error bodies look like).
+
+        NOTE: an earlier version of this check used a plain ASCII-decode
+        test with no exception for binary signatures, which incorrectly
+        flagged real MP3 files as "text" — ID3 tag headers start with
+        several low-value control bytes that happen to fall in the
+        ASCII range, causing valid downloads to be deleted and retried
+        forever. This version fixes that by checking real media magic
+        numbers first.
+        """
         if not data:
             return True
+
+        # Known binary audio/video container/frame signatures.
+        binary_signatures = (
+            b"ID3",                  # MP3 with ID3 tag
+            b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xfa",  # raw MPEG frame sync
+            b"\x1a\x45\xdf\xa3",      # WebM / Matroska (EBML header)
+            b"OggS",                  # OGG
+            b"RIFF",                  # WAV container
+            b"fLaC",                  # FLAC
+        )
+        if any(data.startswith(sig) for sig in binary_signatures):
+            return False
+
+        # MP4/M4A: "ftyp" box typically appears at byte offset 4.
+        if len(data) >= 8 and data[4:8] == b"ftyp":
+            return False
+
         sample = data[:64].lstrip()
         if not sample:
             return True
+
         if sample[0:1] in (b"{", b"[", b"<"):
             return True
-        try:
-            sample.decode("ascii")
-            return True
-        except UnicodeDecodeError:
-            return False
+
+        # Only treat as text if the sample is overwhelmingly printable
+        # characters — real binary data (even if some bytes happen to
+        # fall in the ASCII range) won't be this uniformly printable.
+        printable = sum(
+            1 for b in sample if 0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D)
+        )
+        if len(sample) and (printable / len(sample)) > 0.9:
+            try:
+                sample.decode("ascii")
+                return True
+            except UnicodeDecodeError:
+                return False
+
+        return False
 
     async def _save_binary_response(self, response, file_path: str, download_type: str, video_id: str) -> Optional[str]:
         """Stream an aiohttp response body to disk with progress logging.
 
         After writing, the file is sanity-checked two ways: it must be
         well over self.min_valid_file_bytes, AND its first bytes must
-        not look like text/JSON/HTML. If either check fails (a provider
-        serving an error page, a Telegram preview page, an expired-link
-        placeholder, or a tiny preview clip with HTTP 200), the file is
-        deleted and treated as a failed download so the caller retries
-        or falls through to the next provider/cookies, instead of
-        silently handing the player a corrupt or non-audio file.
+        not look like text/JSON/HTML (real media magic numbers like
+        ID3/EBML/ftyp are recognized and always pass). If either check
+        fails (a provider serving an error page, a Telegram preview
+        page, an expired-link placeholder, or a tiny preview clip with
+        HTTP 200), the file is deleted and treated as a failed download
+        so the caller retries or falls through to the next
+        provider/cookies, instead of silently handing the player a
+        corrupt or non-audio file.
         """
         logger.info(f"📥 Downloading {download_type} via API for {video_id}...")
 
@@ -452,12 +496,6 @@ class YouTube:
         Yuki API flow (music.yukiapi.site) — single-step direct stream:
         GET /stream/{video_id}?key=<api_key>&type=audio|video
         -> binary media stream, saved to disk directly.
-
-        NOTE: this replaces an earlier two-step /download -> token ->
-        /stream flow that was unreliable (the server would sometimes
-        reject its own freshly-issued token as "invalid or expired"),
-        causing random mid-session failures. The single-step /stream
-        call with just the api_key removes that failure point entirely.
         """
         download_type = "video" if video else "audio"
         stream_endpoint = f"{api_url}/stream/{video_id}"
