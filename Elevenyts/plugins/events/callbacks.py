@@ -23,6 +23,7 @@ from pyrogram.errors import FloodWait, QueryIdInvalid
 
 from Elevenyts import tune, app, config, db, lang, logger, queue, tg, yt
 from Elevenyts.helpers import admin_check, buttons, can_manage_vc
+from Elevenyts.helpers import _autoplay as autoplay
 
 
 def safe_callback(func):
@@ -127,6 +128,16 @@ async def _controls(_, query: types.CallbackQuery):
     # Handle shuffle action
     if action == "shuffle":
         return await handle_shuffle(query, chat_id, user)
+
+    # Handle autoplay ON/OFF toggle
+    if action == "autoplay":
+        return await handle_autoplay(query, chat_id)
+
+    # Handle "Play Now" (jump straight to a queued song)
+    if action == "force":
+        if len(args) < 4:
+            return await query.answer("⚠️ Invalid button.", show_alert=True)
+        return await handle_force(query, chat_id, args[3])
     
     await query.answer(query.lang["processing"], show_alert=True)
 
@@ -162,32 +173,6 @@ async def _controls(_, query: types.CallbackQuery):
         await tune.play_next(chat_id)
         status = query.lang["skipped"]
         reply = query.lang["play_skipped"].format(user)
-
-    elif action == "force":
-        pos, media = queue.check_item(chat_id, args[3])
-        if not media or pos == -1:
-            return await query.edit_message_text(query.lang["play_expired"])
-
-        current = queue.get_current(chat_id)
-        m_id = current.message_id if current else None
-        queue.force_add(chat_id, media, remove=pos)
-        try:
-            await app.delete_messages(
-                chat_id=chat_id, message_ids=[
-                    m_id, media.message_id], revoke=True
-            )
-            media.message_id = None
-        except:
-            pass
-
-        msg = await app.send_message(chat_id=chat_id, text=query.lang["play_next"])
-        if not media.file_path:
-            media.file_path = await yt.download(
-                media.id,
-                video=getattr(media, "video", False),
-            )
-        media.message_id = msg.id
-        return await tune.play_media(chat_id, msg, media)
 
     elif action == "replay":
         media = queue.get_current(chat_id)
@@ -248,6 +233,73 @@ async def _controls(_, query: types.CallbackQuery):
             pass
     except Exception:
         pass
+
+
+async def handle_autoplay(query: types.CallbackQuery, chat_id: int):
+    """Toggle autoplay ON/OFF and refresh the button under the song."""
+    new_state = autoplay.toggle(chat_id)
+    if new_state:
+        await query.answer(
+            f"Autoplay is now ON. The bot keeps playing songs and leaves "
+            f"after {autoplay.LIMIT} songs.",
+            show_alert=True,
+        )
+    else:
+        await query.answer("Autoplay is now OFF.", show_alert=False)
+
+    # Rebuild the buttons but keep the timer/status row as it is.
+    timer_text = None
+    try:
+        first_button = query.message.reply_markup.inline_keyboard[0][0]
+        if first_button.callback_data and first_button.callback_data.startswith("controls status"):
+            timer_text = first_button.text
+    except Exception:
+        pass
+
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=buttons.controls(chat_id, timer=timer_text)
+        )
+    except Exception:
+        pass
+
+
+async def handle_force(query: types.CallbackQuery, chat_id: int, item_id: str):
+    """Play Now: jump straight to the chosen queued song.
+    The song that was playing is replaced by it."""
+    pos, media = queue.check_item(chat_id, item_id)
+    if not media or pos == -1:
+        return await query.answer(query.lang["play_expired"], show_alert=True)
+
+    await query.answer()
+
+    current = queue.get_current(chat_id)
+    m_id = current.message_id if current else None
+    queue.force_add(chat_id, media, remove=pos)
+
+    # Clean up the old "now playing" message and the old "queued" message.
+    ids = [i for i in (m_id, getattr(media, "message_id", None)) if i]
+    if ids:
+        try:
+            await app.delete_messages(chat_id=chat_id, message_ids=ids, revoke=True)
+        except Exception:
+            pass
+    media.message_id = None
+
+    # Remove the /queue message the button was pressed on.
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    msg = await app.send_message(chat_id=chat_id, text=query.lang["play_next"])
+    if not media.file_path:
+        media.file_path = await yt.download(
+            media.id,
+            video=getattr(media, "video", False),
+        )
+    media.message_id = msg.id
+    return await tune.play_media(chat_id, msg, media)
 
 
 async def handle_seek(query: types.CallbackQuery, chat_id: int, action: str, user: str):
@@ -473,4 +525,4 @@ async def _playmode(_, query: types.CallbackQuery):
             _language,
             chat_id,
         )
-    )
+            )
