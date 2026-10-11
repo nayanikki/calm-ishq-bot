@@ -16,6 +16,7 @@
 
 import asyncio
 import logging
+import random
 from ntgcalls import ConnectionNotFound, TelegramServerError
 from py_yt import VideosSearch
 from pyrogram import enums, errors
@@ -551,8 +552,11 @@ class TgCall(PyTgCalls):
 
     async def _autoplay_candidates(self, chat_id: int, seed) -> list:
         """Search YouTube for songs related to the last played song.
-        Skips songs already played in this session, live streams, very
-        short clips and songs longer than DURATION_LIMIT."""
+
+        Skips songs already played in this session (by video id AND by
+        title, so a different upload of the same song is not picked
+        again), live streams, very short clips and songs longer than
+        DURATION_LIMIT."""
         title = (getattr(seed, "title", "") or "").strip()
         channel = (getattr(seed, "channel_name", "") or "").strip()
 
@@ -579,6 +583,10 @@ class TgCall(PyTgCalls):
                     continue
                 seen.add(vid)
 
+                # Same song, different upload (lyric video, audio, re-upload...)
+                if autoplay.is_same_song(chat_id, r.get("title")):
+                    continue
+
                 duration = r.get("duration")
                 if not duration or duration == "LIVE":
                     continue
@@ -603,15 +611,15 @@ class TgCall(PyTgCalls):
                         is_live=False,
                     )
                 )
-                if len(found) >= 5:
+                if len(found) >= 8:
                     return found
         return found
 
     async def _autoplay_pick(self, chat_id: int):
         """Called when the queue ran out. If autoplay is ON, find a related
         song, download it (trying up to 3 candidates if a download fails),
-        add it to the queue and return it. Returns None if autoplay is off
-        or nothing could be played."""
+        make it the only item in the queue and return it. Returns None if
+        autoplay is off or nothing could be played."""
         if not autoplay.is_enabled(chat_id):
             return None
 
@@ -625,6 +633,9 @@ class TgCall(PyTgCalls):
             logger.warning(f"Autoplay candidate search failed for {chat_id}: {e}")
             return None
 
+        # Don't always take the first search result.
+        random.shuffle(candidates)
+
         for track in candidates[:3]:
             track.user = "Autoplay"
             try:
@@ -635,14 +646,21 @@ class TgCall(PyTgCalls):
                 logger.warning(f"Autoplay download error for {track.id}: {e}")
                 track.file_path = None
 
-            if track.file_path:
-                autoplay.mark_played(chat_id, track.id)
-                queue.add(chat_id, track)
-                logger.info(f"🎲 Autoplay picked {track.id} for {chat_id}")
-                return track
+            # Whether or not it downloads, never try this song again this session.
+            autoplay.mark_played(chat_id, track.id, track.title)
 
-            # This one failed to download: never try it again this session.
-            autoplay.mark_played(chat_id, track.id)
+            if track.file_path:
+                # The old song has finished and nothing else is waiting, so
+                # start the queue over with just the new song. That makes it
+                # the "current" item (queue index 0) instead of leaving the
+                # finished song at the front.
+                queue.clear(chat_id)
+                queue.add(chat_id, track)
+                logger.info(
+                    f"🎲 Autoplay: '{getattr(seed, 'title', '?')}' -> "
+                    f"'{track.title}' ({track.id}) in {chat_id}"
+                )
+                return track
 
         logger.info(f"Autoplay found nothing playable for {chat_id}")
         return None
