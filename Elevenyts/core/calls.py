@@ -16,7 +16,10 @@
 
 import asyncio
 import logging
+import os
 import random
+
+import aiohttp
 from ntgcalls import ConnectionNotFound, TelegramServerError
 from py_yt import VideosSearch
 from pyrogram import enums, errors
@@ -51,6 +54,10 @@ class TgCall(PyTgCalls):
         self.clients = []
         self._play_next_locks = {}  # Lock to prevent concurrent play_next calls per chat
         self._stream_end_cache = {}  # Cache to prevent duplicate stream end processing
+        self._ap_locks = {}          # per-chat lock for autoplay picking
+        self._ap_cache = {}          # chat_id -> (seed_video_id, prefetched Track)
+        self._ap_tasks = {}          # chat_id -> background prefetch task
+        self._transition = {}        # chat_id -> time we last left/joined the VC ourselves
 
     async def _edit_media_with_retry(self, message: Message, media_obj: InputMediaPhoto, reply_markup):
         """Edit media with basic FloodWait handling."""
@@ -131,6 +138,10 @@ class TgCall(PyTgCalls):
         # The voice-chat session is over: reset the autoplay song counter.
         # (The autoplay ON/OFF setting itself is kept.)
         autoplay.reset_session(chat_id)
+        self._ap_cache.pop(chat_id, None)
+        task = self._ap_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
 
         # Cancel any active preload tasks when stopping
         try:
@@ -280,6 +291,7 @@ class TgCall(PyTgCalls):
             ffmpeg_parameters=ffmpeg_params,
         )
 
+        self._transition[chat_id] = asyncio.get_event_loop().time()
         try:
             call = await client.get_call(chat_id)
             if call:
@@ -332,6 +344,7 @@ class TgCall(PyTgCalls):
                     else:
                         raise
 
+            self._transition[chat_id] = asyncio.get_event_loop().time()
             if seek_time:
                 media.time = seek_time
             else:
@@ -341,6 +354,9 @@ class TgCall(PyTgCalls):
                 await db.add_call(chat_id)
                 # Autoplay bookkeeping: song counter + "already played" list
                 autoplay.note_played(chat_id, media)
+                self._autoplay_prefetch(chat_id)
+                if getattr(media, "user", None) == "Autoplay":
+                    asyncio.create_task(self._autoplay_log(chat_id, media))
                 text = _lang["play_media"].format(
                     media.url,
                     media.title,
@@ -550,93 +566,188 @@ class TgCall(PyTgCalls):
             logger.debug(f"Could not send autoplay limit message in {chat_id}: {e}")
         await self.stop(chat_id)
 
-    async def _autoplay_candidates(self, chat_id: int, seed) -> list:
-        """Search YouTube for songs related to the last played song.
-
-        Skips songs already played in this session (by video id AND by
-        title, so a different upload of the same song is not picked
-        again), live streams, very short clips and songs longer than
-        DURATION_LIMIT."""
-        title = (getattr(seed, "title", "") or "").strip()
-        channel = (getattr(seed, "channel_name", "") or "").strip()
-
-        queries = []
-        if title:
-            queries.append(f"{title} similar songs")
-        if channel:
-            queries.append(f"{channel} songs")
-        if title:
-            queries.append(f"songs like {title}")
-
-        found = []
-        seen = set()
-        for query in queries:
+    async def _autoplay_log(self, chat_id: int, media) -> None:
+        """Tell the logger group that this song is playing via autoplay."""
+        try:
+            if not await db.is_logger() or chat_id == app.logger:
+                return
             try:
-                results = (await VideosSearch(query, limit=10).next()).get("result", [])
-            except Exception as e:
-                logger.debug(f"Autoplay search failed for '{query}': {e}")
-                continue
+                chat = await app.get_chat(chat_id)
+                chat_name = chat.title or str(chat_id)
+            except Exception:
+                chat_name = str(chat_id)
+            text = (
+                f"<u>{app.name} \u1d00\u1d1c\u1d1b\u1d0f\u1d18\u029f\u1d00\u028f \u029f\u1d0f\u0262</u>\n\n"
+                f"<b>Chat:</b> <code>{chat_id}</code> | {chat_name}\n"
+                f"<b>Mode:</b> Autoplay \U0001F3B2\n\n"
+                f"<b>This song is playing via autoplay</b>\n"
+                f"<b>Title:</b> {media.title}\n"
+                f"<b>Duration:</b> {media.duration} min"
+            )
+            await app.send_message(chat_id=app.logger, text=text)
+        except Exception as e:
+            logger.debug(f"Autoplay log failed for {chat_id}: {e}")
 
-            for r in results:
-                vid = r.get("id")
-                if not vid or vid in seen or autoplay.was_played(chat_id, vid):
-                    continue
-                seen.add(vid)
-
-                # Same song, different upload (lyric video, audio, re-upload...)
-                if autoplay.is_same_song(chat_id, r.get("title")):
-                    continue
-
-                duration = r.get("duration")
-                if not duration or duration == "LIVE":
-                    continue
-                duration_sec = utils.to_seconds(duration)
-                if duration_sec < 60 or duration_sec > config.DURATION_LIMIT:
-                    continue
-
-                thumbnails = r.get("thumbnails") or [{}]
-                thumbnail = (thumbnails[-1].get("url") or "").split("?")[0]
-
-                found.append(
-                    Track(
-                        id=vid,
-                        channel_name=(r.get("channel") or {}).get("name"),
-                        duration=duration,
-                        duration_sec=duration_sec,
-                        message_id=0,
-                        title=(r.get("title") or "Unknown")[:25],
-                        thumbnail=thumbnail,
-                        url=r.get("link"),
-                        view_count=(r.get("viewCount") or {}).get("short"),
-                        is_live=False,
-                    )
-                )
-                if len(found) >= 8:
-                    return found
-        return found
-
-    async def _autoplay_pick(self, chat_id: int):
-        """Called when the queue ran out. If autoplay is ON, find a related
-        song, download it (trying up to 3 candidates if a download fails),
-        make it the only item in the queue and return it. Returns None if
-        autoplay is off or nothing could be played."""
-        if not autoplay.is_enabled(chat_id):
-            return None
-
-        seed = autoplay.get_last(chat_id)
-        if not seed:
-            return None
+    async def _autoplay_mix(self, video_id: str) -> list:
+        """YouTube's own "Mix" for a video (same list YouTube Music uses for
+        its radio): songs with the same mood / language / artist style."""
+        url = ("https://www.youtube.com/youtubei/v1/next"
+               "?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8")
+        body = {
+            "context": {"client": {
+                "clientName": "WEB", "clientVersion": "2.20240814.00.00",
+                "hl": "en", "gl": "IN",
+            }},
+            "videoId": video_id,
+            "playlistId": f"RD{video_id}",
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, json=body, timeout=aiohttp.ClientTimeout(total=12)
+                ) as resp:
+                    if resp.status != 200:
+                        logger.info(f"Autoplay mix HTTP {resp.status} for {video_id}")
+                        return []
+                    data = await resp.json(content_type=None)
+        except Exception as e:
+            logger.info(f"Autoplay mix failed for {video_id}: {e}")
+            return []
 
         try:
-            candidates = await self._autoplay_candidates(chat_id, seed)
-        except Exception as e:
-            logger.warning(f"Autoplay candidate search failed for {chat_id}: {e}")
+            items = (data["contents"]["twoColumnWatchNextResults"]
+                     ["playlist"]["playlist"]["contents"])
+        except Exception:
+            return []
+
+        out = []
+        for it in items:
+            r = it.get("playlistPanelVideoRenderer")
+            if not r:
+                continue
+            try:
+                vid = r["videoId"]
+                title = (r.get("title") or {}).get("simpleText") or "Unknown"
+                length = (r.get("lengthText") or {}).get("simpleText")
+                chan = ((r.get("shortBylineText") or {}).get("runs") or [{}])[0].get("text")
+                thumbs = (r.get("thumbnail") or {}).get("thumbnails") or [{}]
+                out.append({
+                    "id": vid, "title": title, "duration": length,
+                    "channel": chan,
+                    "thumbnail": (thumbs[-1].get("url") or "").split("?")[0],
+                })
+            except Exception:
+                continue
+        return out
+
+    def _autoplay_accept(self, chat_id: int, anchor, vid, title, duration) -> bool:
+        """Is this search/mix result a good next song?"""
+        if not vid or autoplay.was_played(chat_id, vid):
+            return False
+        if autoplay.is_same_song(chat_id, title):
+            return False            # same song, other upload (lyrics, audio...)
+        if autoplay.is_junk(title):
+            return False            # jukebox / mashup / 1 hour / shorts ...
+        if not duration or duration == "LIVE":
+            return False
+        try:
+            sec = utils.to_seconds(duration)
+        except Exception:
+            return False
+        if sec < 90 or sec > min(config.DURATION_LIMIT, 600):
+            return False
+        if anchor and autoplay.wrong_vibe(
+            getattr(anchor, "title", ""), getattr(anchor, "channel_name", ""), title
+        ):
+            return False            # sad song -> no party song
+        return True
+
+    async def _autoplay_candidates(self, chat_id: int) -> list:
+        last = autoplay.get_last(chat_id)
+        anchor = autoplay.get_anchor(chat_id)
+        if not last:
+            return []
+
+        raw = []   # (id, title, duration, channel, thumbnail)
+        # 1) YouTube Mix of the song that just played, then of the song the
+        #    user originally chose (keeps the mood from drifting away).
+        for src in (last, anchor):
+            if src is None:
+                continue
+            for m in await self._autoplay_mix(src.id):
+                raw.append(m)
+            if len(raw) >= 8:
+                break
+
+        found, seen = [], set()
+
+        def collect(items):
+            for m in items:
+                vid = m["id"]
+                if vid in seen:
+                    continue
+                if self._autoplay_accept(chat_id, anchor, vid, m["title"], m["duration"]):
+                    seen.add(vid)
+                    found.append(m)
+
+        collect(raw)
+
+        # 2) Fallback: mood + language search (never the song's own name,
+        #    so we don't get its lyric video / reuploads).
+        if len(found) < 3:
+            title = getattr(anchor, "title", "") or ""
+            chan = getattr(anchor, "channel_name", "") or ""
+            for q in autoplay.mood_queries(title, chan):
+                try:
+                    res = (await VideosSearch(q, limit=15).next()).get("result", [])
+                except Exception as e:
+                    logger.debug(f"Autoplay search failed for '{q}': {e}")
+                    continue
+                items = []
+                for r in res:
+                    th = r.get("thumbnails") or [{}]
+                    items.append({
+                        "id": r.get("id"), "title": r.get("title") or "Unknown",
+                        "duration": r.get("duration"),
+                        "channel": (r.get("channel") or {}).get("name"),
+                        "thumbnail": (th[-1].get("url") or "").split("?")[0],
+                    })
+                collect(items)
+                if len(found) >= 6:
+                    break
+
+        tracks = []
+        for m in found:
+            try:
+                sec = utils.to_seconds(m["duration"])
+            except Exception:
+                continue
+            tracks.append(Track(
+                id=m["id"],
+                channel_name=m.get("channel"),
+                duration=m["duration"],
+                duration_sec=sec,
+                message_id=0,
+                title=(m["title"] or "Unknown")[:25],
+                thumbnail=m.get("thumbnail"),
+                url=f"https://www.youtube.com/watch?v={m['id']}",
+                is_live=False,
+            ))
+        return tracks
+
+    async def _autoplay_pick(self, chat_id: int):
+        """Find + fully download a related song. Does NOT touch the queue."""
+        candidates = await self._autoplay_candidates(chat_id)
+        if not candidates:
             return None
 
-        # Don't always take the first search result.
-        random.shuffle(candidates)
+        # Mix order is already "most related first": keep the best few in
+        # play but shuffle them a little so it is not always the same one.
+        head = candidates[:5]
+        random.shuffle(head)
+        candidates = head + candidates[5:]
 
-        for track in candidates[:3]:
+        for track in candidates[:6]:
             track.user = "Autoplay"
             try:
                 track.file_path = await yt.download(
@@ -646,16 +757,11 @@ class TgCall(PyTgCalls):
                 logger.warning(f"Autoplay download error for {track.id}: {e}")
                 track.file_path = None
 
-            # Whether or not it downloads, never try this song again this session.
+            # Never try this song again this session, good or bad.
             autoplay.mark_played(chat_id, track.id, track.title)
 
-            if track.file_path:
-                # The old song has finished and nothing else is waiting, so
-                # start the queue over with just the new song. That makes it
-                # the "current" item (queue index 0) instead of leaving the
-                # finished song at the front.
-                queue.clear(chat_id)
-                queue.add(chat_id, track)
+            if track.file_path and os.path.exists(track.file_path):
+                seed = autoplay.get_last(chat_id)
                 logger.info(
                     f"🎲 Autoplay: '{getattr(seed, 'title', '?')}' -> "
                     f"'{track.title}' ({track.id}) in {chat_id}"
@@ -663,6 +769,85 @@ class TgCall(PyTgCalls):
                 return track
 
         logger.info(f"Autoplay found nothing playable for {chat_id}")
+        return None
+
+    async def _autoplay_get(self, chat_id: int):
+        """Next autoplay song: prefetched one if it matches the song that
+        just played, otherwise pick a fresh one."""
+        lock = self._ap_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            if not autoplay.is_enabled(chat_id):
+                return None
+            seed = autoplay.get_last(chat_id)
+            if not seed:
+                return None
+            cached = self._ap_cache.get(chat_id)
+            if cached and cached[0] == seed.id:
+                track = cached[1]
+                if track.file_path and os.path.exists(track.file_path):
+                    return track
+            self._ap_cache.pop(chat_id, None)
+            try:
+                track = await self._autoplay_pick(chat_id)
+            except Exception as e:
+                logger.warning(f"Autoplay pick crashed for {chat_id}: {e}", exc_info=True)
+                track = None
+            if track:
+                self._ap_cache[chat_id] = (seed.id, track)
+            return track
+
+    def _autoplay_prefetch(self, chat_id: int) -> None:
+        """While a song plays, already find + download the next autoplay song
+        so there is no silence / failure at the moment the song ends."""
+        if not autoplay.is_enabled(chat_id) or autoplay.limit_reached(chat_id):
+            return
+        task = self._ap_tasks.get(chat_id)
+        if task and not task.done():
+            return
+        try:
+            self._ap_tasks[chat_id] = asyncio.create_task(self._autoplay_get(chat_id))
+        except Exception as e:
+            logger.debug(f"Autoplay prefetch not started for {chat_id}: {e}")
+
+    async def _autoplay_take(self, chat_id: int):
+        """Queue is empty: get the next autoplay song and make it the
+        (only) item of the queue. Retries once before giving up."""
+        for attempt in range(2):
+            track = await self._autoplay_get(chat_id)
+            if track:
+                self._ap_cache.pop(chat_id, None)
+                queue.clear(chat_id)
+                queue.add(chat_id, track)
+                return track
+            if not autoplay.is_enabled(chat_id):
+                return None
+            await asyncio.sleep(2)
+        return None
+
+    async def _resolve_playable(self, chat_id: int, media):
+        """Make sure `media` has a downloaded file. If a song can't be
+        downloaded, SKIP it (and try the next / autoplay) instead of
+        leaving the voice chat."""
+        for _ in range(8):
+            if media is None:
+                media = await self._autoplay_take(chat_id)
+                if media is None:
+                    return None
+            if media.file_path and os.path.exists(media.file_path):
+                return media
+            try:
+                media.file_path = await yt.download(
+                    media.id,
+                    is_live=getattr(media, "is_live", False),
+                    video=getattr(media, "video", False),
+                )
+            except Exception as e:
+                logger.warning(f"Download error for {media.id}: {e}")
+                media.file_path = None
+            if media.file_path:
+                return media
+            logger.warning(f"Skipping '{getattr(media, 'title', media.id)}' - download failed")
+            media = queue.get_next(chat_id)   # drops the failed one
         return None
 
     async def play_next(self, chat_id: int) -> None:
@@ -756,12 +941,21 @@ class TgCall(PyTgCalls):
                     logger.debug(
                         f"Could not delete previous message in {chat_id}: {e}")
 
-                # Queue is empty: if autoplay is ON, pick a related song.
-                if not media:
-                    media = await self._autoplay_pick(chat_id)
+                # Next song: queue -> autoplay. Download failures are skipped,
+                # they never make the bot leave the voice chat.
+                media = await self._resolve_playable(chat_id, media)
 
                 if not media:
-                    if config.AUTO_END:
+                    if autoplay.is_enabled(chat_id):
+                        try:
+                            await app.send_message(
+                                chat_id=target_chat,
+                                text="<blockquote>\u2726 Autoplay could not find a playable song right now. "
+                                     "Send /play to continue.</blockquote>",
+                            )
+                        except Exception:
+                            pass
+                    elif config.AUTO_END:
                         _lang = await lang.get_lang(chat_id)
                         try:
                             await app.send_message(
@@ -776,24 +970,6 @@ class TgCall(PyTgCalls):
 
                 _lang = await lang.get_lang(chat_id)
                 msg = None
-                if not media.file_path:
-                    is_live = getattr(media, 'is_live', False)
-                    media.file_path = await yt.download(
-                        media.id,
-                        is_live=is_live,
-                        video=getattr(media, 'video', False),
-                    )
-                    if not media.file_path:
-                        await self.stop(chat_id)
-                        if msg:
-                            try:
-                                await msg.edit_text(
-                                    _lang["error_no_file"].format(
-                                        config.SUPPORT_CHAT)
-                                )
-                            except Exception:
-                                pass
-                        return
 
                 try:
                     msg = await app.send_message(chat_id=target_chat, text=_lang["play_next"])
@@ -860,6 +1036,12 @@ class TgCall(PyTgCalls):
 
                         await self.play_next(chat_id)
                 elif isinstance(update, types.ChatUpdate):
+                    # Ignore the LEFT_GROUP echo of our own leave+rejoin when
+                    # switching songs (it used to kill the next song).
+                    if update.status == types.ChatUpdate.Status.LEFT_GROUP:
+                        t0 = self._transition.get(update.chat_id, 0)
+                        if asyncio.get_event_loop().time() - t0 < 8 and queue.get_current(update.chat_id):
+                            return
                     if update.status in [
                         types.ChatUpdate.Status.KICKED,
                         types.ChatUpdate.Status.LEFT_GROUP,
