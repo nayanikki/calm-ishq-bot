@@ -219,6 +219,7 @@ class Inline:
                     self.ikb(
                         text=f"{S_PLAY} {_f('Play Now')} {_f(str(idx))}",
                         callback_data=data,
+                        style=ButtonStyle.SUCCESS,
                     )
                 )
             if not buttons:
@@ -292,4 +293,4 @@ class Inline:
                     self.ikb(text=f"{S_PLAY} {_f('Open In YouTube')}", url=link),
                 ],
             ]
-        )
+            )
