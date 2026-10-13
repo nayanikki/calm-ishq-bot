@@ -16,7 +16,8 @@
 
 from pyrogram import filters, types
 
-from Elevenyts import app, config, db, lang, queue
+from Elevenyts import app, config, db, lang, queue, tune
+from Elevenyts.helpers import _autoplay as autoplay
 from Elevenyts.helpers import Track, buttons, thumb
 
 
@@ -59,7 +60,21 @@ async def _queue_func(_, m: types.Message):
     # Up to 14 upcoming songs, each gets its own "Play Now" button.
     upcoming = _queue[1:15]
 
-    if upcoming:
+    # Nothing queued but autoplay already picked the next song: show it
+    # too, with its own green Play Now button.
+    if not upcoming and autoplay.is_enabled(chat_id):
+        cached = tune._ap_cache.get(chat_id)
+        if cached and cached[1].file_path:
+            upcoming = [cached[1]]
+            _text += "\n\nAutoplay next:"
+            _text += f"\n1. {cached[1].title} ({cached[1].duration})"
+            upcoming_shown = True
+        else:
+            upcoming_shown = False
+    else:
+        upcoming_shown = False
+
+    if upcoming and not upcoming_shown:
         _text += "\n\nUpcoming:"
         for i, media in enumerate(upcoming, start=1):
             _text += f"\n{i}. {media.title} ({media.duration})"
@@ -76,4 +91,4 @@ async def _queue_func(_, m: types.Message):
             _playing,
             upcoming=upcoming,
         ),
-                                 )
+    )
