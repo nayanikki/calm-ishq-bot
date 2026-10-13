@@ -269,7 +269,14 @@ async def handle_force(query: types.CallbackQuery, chat_id: int, item_id: str):
     The song that was playing is replaced by it."""
     pos, media = queue.check_item(chat_id, item_id)
     if not media or pos == -1:
-        return await query.answer(query.lang["play_expired"], show_alert=True)
+        # Maybe it is the song autoplay already picked for next.
+        cached = tune._ap_cache.get(chat_id)
+        if cached and cached[1].id == item_id and cached[1].file_path:
+            media = cached[1]
+            tune._ap_cache.pop(chat_id, None)
+            pos = queue.add(chat_id, media)
+        else:
+            return await query.answer(query.lang["play_expired"], show_alert=True)
 
     await query.answer()
 
@@ -525,4 +532,4 @@ async def _playmode(_, query: types.CallbackQuery):
             _language,
             chat_id,
         )
-            )
+    )
