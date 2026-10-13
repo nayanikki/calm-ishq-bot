@@ -58,6 +58,21 @@ S_DOT = "\u00B7"      # ·
 S_BACK = "\u00AB"     # «
 
 
+# ----------------------------------------------------------
+# PREMIUM (custom) EMOJI for the DM start buttons.
+# Paste the custom emoji ID (a long number) between the quotes.
+# Left empty "" = a normal symbol is shown instead.
+# NOTE: Telegram only shows these if the BOT OWNER has Telegram Premium.
+# ----------------------------------------------------------
+START_ICONS = {
+    "commands": "",
+    "support": "",
+    "channel": "",
+    "owner": "",
+    "addme": "",
+}
+
+
 class Inline:
     def __init__(self):
         self.ikm = types.InlineKeyboardMarkup
@@ -176,20 +191,16 @@ class Inline:
     def play_queued(
         self, chat_id: int, item_id: str, _text: str
     ) -> types.InlineKeyboardMarkup:
+        # Under "Added to queue": only one blue Play Now button.
         return self.ikm(
             [
-               [
-    self.ikb(
-        text="▷", callback_data=f"controls resume {chat_id}"),
-    self.ikb(
-        text="II", callback_data=f"controls pause {chat_id}"),
-    self.ikb(
-        text="↻", callback_data=f"controls replay {chat_id}"),
-    self.ikb(
-        text="‣‣I", callback_data=f"controls skip {chat_id}"),
-    self.ikb(
-        text="▢", callback_data=f"controls stop {chat_id}"),
-               ]
+                [
+                    self.ikb(
+                        text=f"{S_PLAY} {_f('Play Now')}",
+                        callback_data=f"controls force {chat_id} {item_id}",
+                        style=ButtonStyle.PRIMARY,
+                    )
+                ]
             ]
         )
 
@@ -219,7 +230,7 @@ class Inline:
                     self.ikb(
                         text=f"{S_PLAY} {_f('Play Now')} {_f(str(idx))}",
                         callback_data=data,
-                        style=ButtonStyle.SUCCESS,
+                        style=ButtonStyle.PRIMARY,
                     )
                 )
             if not buttons:
@@ -249,38 +260,39 @@ class Inline:
             ]
         )
 
+    def _start_btn(self, label: str, symbol: str, key: str, **kw):
+        """Button with a premium emoji if its ID is set (and the installed
+        pyrogram supports it), otherwise with a plain symbol."""
+        icon = START_ICONS.get(key)
+        if icon:
+            try:
+                return self.ikb(text=label, icon_custom_emoji_id=icon, **kw)
+            except TypeError:
+                pass  # old pyrogram without custom-emoji buttons
+        return self.ikb(text=f"{symbol} {label}", **kw)
+
     def start_key(
         self, lang: dict, private: bool = False
     ) -> types.InlineKeyboardMarkup:
-        # Only "Take Me Home" is blue. The other buttons have no style
-        # (plain/default colour). Symbols are used instead of emoji.
+        # Layout + bold serif font + blue buttons, like the reference bot.
+        P = ButtonStyle.PRIMARY
         rows = [
             [
-                self.ikb(
-                    text=f"{S_GEM} {_f('Take Me Home')} {S_GEM}",
-                    url=f"https://t.me/{app.username}",
-                    style=ButtonStyle.PRIMARY,
-                ),
+                self._start_btn("𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬", "♫", "commands",
+                                callback_data="help", style=P),
+                self._start_btn("𝐒𝐮𝐩𝐩𝐨𝐫𝐭", "♡", "support",
+                                url="https://t.me/nightbloomsgc", style=P),
             ],
             [
-                self.ikb(
-                    text=f"{S_DIAMOND} {_f('Dev')}",
-                    url="https://t.me/pixieiii",
-                ),
-                self.ikb(
-                    text=f"{S_FLOWER} {_f('Support')}",
-                    url="https://t.me/nightbloomsgc",
-                ),
+                self._start_btn("𝐂𝐡𝐚𝐧𝐧𝐞𝐥", "✦", "channel",
+                                url="https://t.me/pixiiela", style=P),
+                self._start_btn("𝐎𝐰𝐧𝐞𝐫", "♛", "owner",
+                                url="https://t.me/pixieiii", style=P),
             ],
             [
-                self.ikb(
-                    text=f"{S_MOON} {_f('Updates')}",
-                    url="https://t.me/pixiiela",
-                ),
-                self.ikb(
-                    text=f"{S_STAR} {_f('Help')}",
-                    callback_data="help",
-                ),
+                self._start_btn("𝐀𝐝𝐝 𝐌𝐞", "⌂", "addme",
+                                url=f"https://t.me/{app.username}?startgroup=true",
+                                style=P),
             ],
         ]
         return self.ikm(rows)
@@ -293,4 +305,4 @@ class Inline:
                     self.ikb(text=f"{S_PLAY} {_f('Open In YouTube')}", url=link),
                 ],
             ]
-            )
+    )
