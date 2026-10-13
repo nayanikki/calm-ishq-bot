@@ -75,6 +75,9 @@ class YouTube:
         # Cache search results (10 minute TTL)
         self.search_cache = {}
         self._download_semaphore = asyncio.Semaphore(5)
+        # One download per video at a time (preload + play must not both
+        # write the same file).
+        self._video_locks: dict = {}
         self._max_video_height = config.VIDEO_MAX_HEIGHT
 
         # Log configuration
@@ -359,30 +362,50 @@ class YouTube:
         downloaded = 0
         last_log = 0
         first_chunk: Optional[bytes] = None
-        with open(file_path, "wb") as f:
-            async for chunk in response.content.iter_chunked(65536):
-                if first_chunk is None:
-                    first_chunk = chunk
-                f.write(chunk)
-                downloaded += len(chunk)
+        # Write to a temporary ".part" file and only move it to the real
+        # name once the WHOLE file is verified. Otherwise a second request
+        # (preload / autoplay) can see a half-written file under the real
+        # name and play it -> song stops in the middle.
+        tmp_path = file_path + ".part"
+        try:
+            with open(tmp_path, "wb") as f:
+                async for chunk in response.content.iter_chunked(65536):
+                    if first_chunk is None:
+                        first_chunk = chunk
+                    f.write(chunk)
+                    downloaded += len(chunk)
 
-                if downloaded - last_log >= 5 * 1024 * 1024:
-                    progress_mb = downloaded / (1024 * 1024)
-                    if content_length:
-                        total_mb = int(content_length) / (1024 * 1024)
-                        percent = (downloaded / int(content_length)) * 100
-                        logger.info(f"📊 Progress: {progress_mb:.1f}/{total_mb:.1f} MB ({percent:.1f}%)")
-                    else:
-                        logger.info(f"📊 Downloaded: {progress_mb:.1f} MB")
-                    last_log = downloaded
+                    if downloaded - last_log >= 5 * 1024 * 1024:
+                        progress_mb = downloaded / (1024 * 1024)
+                        if content_length:
+                            total_mb = int(content_length) / (1024 * 1024)
+                            percent = (downloaded / int(content_length)) * 100
+                            logger.info(f"📊 Progress: {progress_mb:.1f}/{total_mb:.1f} MB ({percent:.1f}%)")
+                        else:
+                            logger.info(f"📊 Downloaded: {progress_mb:.1f} MB")
+                        last_log = downloaded
+        except BaseException:
+            # connection dropped / cancelled mid-download
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
 
-        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
             logger.error("❌ API download failed: file is empty or not created")
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             return None
 
-        actual_size = os.path.getsize(file_path)
+        actual_size = os.path.getsize(tmp_path)
+
+        # Connection cut early: server promised N bytes but we got fewer.
+        if content_length and content_length.isdigit() and actual_size < int(content_length):
+            logger.error(
+                f"❌ Incomplete download for {video_id}: got {actual_size} of "
+                f"{content_length} bytes - discarding so a half song is never played."
+            )
+            os.remove(tmp_path)
+            return None
 
         if first_chunk and self._looks_like_text_error(first_chunk):
             try:
@@ -392,7 +415,7 @@ class YouTube:
                 )
             except Exception:
                 logger.error(f"❌ API returned non-audio content for {video_id} ({actual_size} bytes)")
-            os.remove(file_path)
+            os.remove(tmp_path)
             return None
 
         if actual_size < self.min_valid_file_bytes:
@@ -401,9 +424,10 @@ class YouTube:
                 f"({actual_size} bytes) for {video_id} — treating as failed "
                 f"(likely a preview clip or error payload, not the full track)."
             )
-            os.remove(file_path)
+            os.remove(tmp_path)
             return None
 
+        os.replace(tmp_path, file_path)
         file_size_mb = actual_size / (1024 * 1024)
         logger.info(f"✅ [API SUCCESS] Downloaded: {file_path} ({file_size_mb:.2f} MB)")
         return file_path
@@ -618,6 +642,18 @@ class YouTube:
         return None
 
     async def download_via_api(self, link: str, video: bool = False) -> Optional[str]:
+        """Public entry: serialises downloads of the SAME video so two
+        callers never write the same file at once."""
+        key = (link.split("v=")[-1].split("&")[0] if "v=" in link else link, video)
+        lock = self._video_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            try:
+                return await self._download_via_api_locked(link, video)
+            finally:
+                if not lock.locked() or True:
+                    self._video_locks.pop(key, None) if len(self._video_locks) > 50 else None
+
+    async def _download_via_api_locked(self, link: str, video: bool = False) -> Optional[str]:
         """
         Download audio/video using the configured music APIs.
 
