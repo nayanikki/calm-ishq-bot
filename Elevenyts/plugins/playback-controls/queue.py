@@ -16,7 +16,8 @@
 
 from pyrogram import filters, types
 
-from Elevenyts import app, config, db, lang, queue
+from Elevenyts import app, config, db, lang, queue, tune
+from Elevenyts.helpers import _autoplay as autoplay
 from Elevenyts.helpers import Track, buttons, thumb
 
 
@@ -42,7 +43,12 @@ async def _queue_func(_, m: types.Message):
         return await m.reply_text("Nothing is playing.")
 
     _reply = await m.reply_text("Fetching queue...")
-    _queue = queue.get_queue(chat_id)
+
+    # Work on a copy so reading the queue can never change the real queue.
+    _queue = list(queue.get_queue(chat_id))
+    if not _queue:
+        return await _reply.edit_text("Nothing is playing.")
+
     _media = _queue[0]
     _thumb = (
         await thumb.generate(_media)
@@ -50,14 +56,27 @@ async def _queue_func(_, m: types.Message):
         else config.DEFAULT_THUMB
     )
     _text = f"Now Playing:\n{_media.title}\nDuration: {_media.duration}\nRequested by: {_media.user}"
-    
-    _queue.pop(0)
 
-    if _queue:
+    # Up to 14 upcoming songs, each gets its own "Play Now" button.
+    upcoming = _queue[1:15]
+
+    # Nothing queued but autoplay already picked the next song: show it
+    # too, with its own green Play Now button.
+    if not upcoming and autoplay.is_enabled(chat_id):
+        cached = tune._ap_cache.get(chat_id)
+        if cached and cached[1].file_path:
+            upcoming = [cached[1]]
+            _text += "\n\nAutoplay next:"
+            _text += f"\n1. {cached[1].title} ({cached[1].duration})"
+            upcoming_shown = True
+        else:
+            upcoming_shown = False
+    else:
+        upcoming_shown = False
+
+    if upcoming and not upcoming_shown:
         _text += "\n\nUpcoming:"
-        for i, media in enumerate(_queue, start=1):
-            if i == 15:
-                break
+        for i, media in enumerate(upcoming, start=1):
             _text += f"\n{i}. {media.title} ({media.duration})"
 
     _playing = await db.playing(chat_id)
@@ -68,7 +87,8 @@ async def _queue_func(_, m: types.Message):
         ),
         reply_markup=buttons.queue_markup(
             chat_id,
-            "Playing" if _playing else "Paused",
+            "",
             _playing,
+            upcoming=upcoming,
         ),
-    )
+)
