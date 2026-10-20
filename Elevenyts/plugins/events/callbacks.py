@@ -15,10 +15,11 @@
 # ==========================================================
 
 import re
+import html
 import asyncio
 from functools import wraps
 
-from pyrogram import filters, types
+from pyrogram import enums, filters, types
 from pyrogram.errors import FloodWait, QueryIdInvalid
 
 from Elevenyts import tune, app, config, db, lang, logger, queue, tg, yt
@@ -85,11 +86,33 @@ async def _controls(_, query: types.CallbackQuery):
     qaction = len(args) == 4
     user = query.from_user.mention
 
-    # Handle close action first - allow any user to delete the message (no popup notification)
+    # Handle close action first - allow any user to close the player message.
+    # The player message is deleted and a separate "Closed by" message is
+    # sent. That message is NOT auto-deleted. The music stream is not touched.
     if action == "close":
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        who = query.from_user
+        if who.username:
+            name = f"@{who.username}"
+        else:
+            name = html.escape(who.first_name or "User")
         try:
             await query.message.delete()
+        except Exception:
+            pass  # already deleted
+        try:
+            await app.send_message(
+                chat_id=query.message.chat.id,
+                text=(
+                    "\u2661 \U0001D40F\u200C\u029F\u1D00\u028F \U0001D40C\u200C\u0454\u1D05\u026A\u1D00 "
+                    "\U0001D402\u200C\u029F\u03C3s\u0454\u1D05 \u2661\n\n"
+                    f"\u2727 Closed by {name}"
+                ),
+                parse_mode=enums.ParseMode.HTML,
+            )
         except Exception:
             pass
         return
@@ -173,6 +196,32 @@ async def _controls(_, query: types.CallbackQuery):
         await tune.play_next(chat_id)
         status = query.lang["skipped"]
         reply = query.lang["play_skipped"].format(user)
+
+    elif action == "force":
+        pos, media = queue.check_item(chat_id, args[3])
+        if not media or pos == -1:
+            return await query.edit_message_text(query.lang["play_expired"])
+
+        current = queue.get_current(chat_id)
+        m_id = current.message_id if current else None
+        queue.force_add(chat_id, media, remove=pos)
+        try:
+            await app.delete_messages(
+                chat_id=chat_id, message_ids=[
+                    m_id, media.message_id], revoke=True
+            )
+            media.message_id = None
+        except:
+            pass
+
+        msg = await app.send_message(chat_id=chat_id, text=query.lang["play_next"])
+        if not media.file_path:
+            media.file_path = await yt.download(
+                media.id,
+                video=getattr(media, "video", False),
+            )
+        media.message_id = msg.id
+        return await tune.play_media(chat_id, msg, media)
 
     elif action == "replay":
         media = queue.get_current(chat_id)
@@ -532,4 +581,4 @@ async def _playmode(_, query: types.CallbackQuery):
             _language,
             chat_id,
         )
-    )
+                     )
