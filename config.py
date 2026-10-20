@@ -14,6 +14,8 @@
 # of this source code without permission is prohibited.
 # ==========================================================
 
+import os
+import re
 from os import getenv
 from typing import List
 from urllib.parse import urlparse
@@ -29,7 +31,9 @@ class Config:
         self.API_HASH: str = getenv("API_HASH", "")
         self.BOT_TOKEN: str = getenv("BOT_TOKEN", "")
         self.LOGGER_ID: int = int(getenv("LOGGER_ID", "0"))
-        self.OWNER_ID: int = int(getenv("OWNER_ID", "0"))
+        # Numeric Telegram user ID of the bot owner. A missing/malformed
+        # value becomes 0, which check() reports as a missing variable.
+        self.OWNER_ID: int = self._env_int("OWNER_ID", 0)
 
         # Database
         self.MONGO_URL: str = getenv("MONGO_DB_URI", "")
@@ -45,7 +49,12 @@ class Config:
         self.SESSION3: str = getenv("STRING_SESSION3", "")
 
         # Support Links
-        self.SUPPORT_CHANNEL: str = getenv("SUPPORT_CHANNEL", "https://t.me/nightbloomsgc")
+        # SUPPORT_CHANNEL / UPDATE_CHANNEL accept https://t.me/name,
+        # t.me/name, @name or name. Empty/malformed -> built-in default.
+        self.SUPPORT_CHANNEL: str = self._tg_link(
+            getenv("SUPPORT_CHANNEL"), "https://t.me/nightbloomsgc")
+        self.UPDATE_CHANNEL: str = self._tg_link(
+            getenv("UPDATE_CHANNEL"), "https://t.me/pixiiela")
         self.SUPPORT_CHAT: str = getenv("SUPPORT_CHAT", "https://t.me/pixiiela")
 
         # Excluded Chats
@@ -82,11 +91,63 @@ class Config:
         # Images
         self.DEFAULT_THUMB: str = getenv("DEFAULT_THUMB", "https://litter.catbox.moe/pi6brrhl2f82zrwv.jpg")
         self.PING_IMG: str = getenv("PING_IMG", "https://files.catbox.moe/fjbj4g.jpg")
-        self.START_IMG: str = getenv("START_IMG", "https://files.catbox.moe/vnl0a4.jpg")
+        # Built-in Ishq Music welcome art (assets/ishq_start.jpg next to this
+        # file). If that file is missing, the old hosted image is used.
+        _local_start = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "assets", "ishq_start.jpg")
+        self.DEFAULT_START_IMG: str = (
+            _local_start if os.path.isfile(_local_start)
+            else "https://files.catbox.moe/vnl0a4.jpg"
+        )
+        self.START_IMG: str = self._clean_image(
+            getenv("START_IMG"), self.DEFAULT_START_IMG)
         self.RADIO_IMG: str = getenv("RADIO_IMG", "https://litter.catbox.moe/pi6brrhl2f82zrwv.jpg")
 
         # Moderation
         self.EXCLUDED_USERNAMES: List[str] = getenv("EXCLUDED_USERNAMES", "").split()
+
+    @staticmethod
+    def _env_text(value) -> str:
+        """Trim spaces and accidental surrounding quotes from an env value."""
+        return (value or "").strip().strip("\"'").strip()
+
+    @classmethod
+    def _env_int(cls, name: str, default: int = 0) -> int:
+        """Read an integer env var; empty or malformed -> default."""
+        raw = cls._env_text(getenv(name))
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _clean_image(cls, value, default: str) -> str:
+        """Image URL (or Telegram file_id). Empty or containing spaces
+        (malformed) -> default."""
+        value = cls._env_text(value)
+        if not value or re.search(r"\s", value):
+            return default
+        return value
+
+    @classmethod
+    def _tg_link(cls, value, default: str) -> str:
+        """Turn @name / name / t.me/name / https://t.me/name into a full
+        link. Empty or malformed -> default."""
+        value = cls._env_text(value)
+        if not value or re.search(r"\s", value):
+            return default
+        if value.startswith("@"):
+            value = value[1:]
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", value):
+            return f"https://t.me/{value}"
+        if re.match(r"(?i)^(t|telegram)\.me/", value):
+            value = "https://" + value
+        if value.lower().startswith("tg://") and len(value) > 5:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return value
+        return default
 
     @staticmethod
     def _clean_base_url(url: str) -> str:
