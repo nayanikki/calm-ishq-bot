@@ -256,7 +256,7 @@ async def play_hndlr(
         if not file:
             await safe_edit(
                 sent,
-                m.lang["play_not_found"].format(config.SUPPORT_CHAT)
+                m.lang["play_not_found"].format(config.SUPPORT_CHANNEL)
             )
             return
 
@@ -266,7 +266,7 @@ async def play_hndlr(
         if not file:
             await safe_edit(
                 sent,
-                m.lang["play_not_found"].format(config.SUPPORT_CHAT)
+                m.lang["play_not_found"].format(config.SUPPORT_CHANNEL)
             )
             return
 
@@ -374,13 +374,13 @@ async def play_hndlr(
                 "• Update YouTube cookies in `Elevenyts/cookies/` folder\n"
                 "• Wait a few minutes before trying again\n"
                 "• Try /radio for uninterrupted music\n\n"
-                f"Support: {config.SUPPORT_CHAT}</blockquote>"
+                f"Support: {config.SUPPORT_CHANNEL}</blockquote>"
             )
         else:
             await safe_edit(
                 sent,
                 f"<blockquote>❌ Playback error:\n{error_msg}\n\n"
-                f"Support: {config.SUPPORT_CHAT}</blockquote>"
+                f"Support: {config.SUPPORT_CHANNEL}</blockquote>"
             )
         return
     if not tracks:
