@@ -101,6 +101,21 @@ async def start(_, message: types.Message):
             reply_markup=key,
             quote=not private,
         )
+    except Exception:
+        # START_IMG is unusable (dead link / not an image): retry with the
+        # built-in default image, then plain text, so /start never fails.
+        try:
+            await message.reply_photo(
+                photo=config.DEFAULT_START_IMG,
+                caption=_text,
+                reply_markup=key,
+            )
+        except Exception:
+            await message.reply_text(
+                text=_text,
+                reply_markup=key,
+                quote=not private,
+            )
 
     # For private chats, add user to database if new
     if private:
