@@ -209,7 +209,7 @@ class TgCall(PyTgCalls):
 
         if not media.file_path:
             if message:
-                return await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+                return await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHANNEL))
             else:
                 logger.error(f"No file path for media in {chat_id}")
                 return
@@ -413,7 +413,7 @@ class TgCall(PyTgCalls):
         except FileNotFoundError:
             if message:
                 try:
-                    await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+                    await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHANNEL))
                 except Exception:
                     pass
             await self.play_next(chat_id)
