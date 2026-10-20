@@ -57,6 +57,10 @@ S_PLAY = "\u25B7"     # ▷
 S_DOT = "\u00B7"      # ·
 S_BACK = "\u00AB"     # «
 
+# Player button labels (exact Ishq Music style)
+BTN_AUTOPLAY = "\u2727 \U0001D400\u200C\u03C5\u1D1B\u03C3\u1D18\u029F\u1D00\u028F \u2727"
+BTN_CLOSE = "\u00D7 \U0001D402\u200C\u029F\u03C3s\u1D07"
+
 
 # ----------------------------------------------------------
 # PREMIUM (custom) EMOJI for the DM start buttons.
@@ -82,9 +86,13 @@ class Inline:
         return self.ikm([[self.ikb(text=text, callback_data=f"cancel_dl", style=ButtonStyle.PRIMARY)]])
 
     def _autoplay_button(self, chat_id: int) -> types.InlineKeyboardButton:
+        # Fixed label. ON/OFF is shown by colour: green = ON, blue = OFF.
         on = autoplay.is_enabled(chat_id)
-        label = f"{S_ON if on else S_OFF} {_f('Autoplay')} {S_DOT} {_f('ON' if on else 'OFF')}"
-        return self.ikb(text=label, callback_data=f"controls autoplay {chat_id}")
+        return self.ikb(
+            text=BTN_AUTOPLAY,
+            callback_data=f"controls autoplay {chat_id}",
+            style=ButtonStyle.SUCCESS if on else ButtonStyle.PRIMARY,
+        )
 
     def controls(
         self,
@@ -106,23 +114,24 @@ class Inline:
             )
 
         if not remove:
-            # Autoplay ON/OFF (replaces the old -15s / +15s seek row)
-            keyboard.append([self._autoplay_button(chat_id)])
-
-            # Main control buttons row
+            # Row 1: Play | Pause | Skip | Repeat (same callbacks as before)
             keyboard.append(
                 [
                     self.ikb(
-                        text="▷", callback_data=f"controls resume {chat_id}"),
+                        text="\u25B7", callback_data=f"controls resume {chat_id}"),
                     self.ikb(
-                        text="II", callback_data=f"controls pause {chat_id}"),
+                        text="\u2161", callback_data=f"controls pause {chat_id}"),
                     self.ikb(
-                        text="↻", callback_data=f"controls replay {chat_id}"),
+                        text="\u00BB", callback_data=f"controls skip {chat_id}"),
                     self.ikb(
-                        text="‣‣I", callback_data=f"controls skip {chat_id}"),
-                    self.ikb(
-                        text="▢", callback_data=f"controls stop {chat_id}"),
+                        text="\u27F3", callback_data=f"controls replay {chat_id}"),
                 ]
+            )
+            # Row 2: Autoplay
+            keyboard.append([self._autoplay_button(chat_id)])
+            # Row 3: Close
+            keyboard.append(
+                [self.ikb(text=BTN_CLOSE, callback_data=f"controls close {chat_id}")]
             )
         return self.ikm(keyboard)
 
@@ -177,8 +186,8 @@ class Inline:
     def ping_markup(self, text: str) -> types.InlineKeyboardMarkup:
         return self.ikm([
             [
-                self.ikb(text=f"{S_FLOWER} {_f('Channel')}", url=config.SUPPORT_CHANNEL),
-                self.ikb(text=f"{S_STAR} {_f('Support')}", url=config.SUPPORT_CHAT),
+                self.ikb(text=f"{S_FLOWER} {_f('Channel')}", url=config.UPDATE_CHANNEL),
+                self.ikb(text=f"{S_STAR} {_f('Support')}", url=config.SUPPORT_CHANNEL),
             ],
             [
                 self.ikb(
@@ -281,13 +290,13 @@ class Inline:
                 self._start_btn("𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬", "♫", "commands",
                                 callback_data="help", style=P),
                 self._start_btn("𝐒𝐮𝐩𝐩𝐨𝐫𝐭", "♡", "support",
-                                url="https://t.me/nightbloomsgc", style=P),
+                                url=config.SUPPORT_CHANNEL, style=P),
             ],
             [
                 self._start_btn("𝐂𝐡𝐚𝐧𝐧𝐞𝐥", "✦", "channel",
-                                url="https://t.me/pixiiela", style=P),
+                                url=config.UPDATE_CHANNEL, style=P),
                 self._start_btn("𝐎𝐰𝐧𝐞𝐫", "♛", "owner",
-                                url="https://t.me/pixieiii", style=P),
+                                url=app.owner_url, style=P),
             ],
             [
                 self._start_btn("𝐀𝐝𝐝 𝐌𝐞", "⌂", "addme",
