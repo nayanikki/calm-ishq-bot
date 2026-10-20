@@ -63,6 +63,9 @@ class Bot(pyrogram.Client):
         self.name: Optional[str] = None
         self.username: Optional[str] = None
         self.mention: Optional[str] = None
+        # Link used by the "Owner" button. Replaced with the owner's
+        # @username link at start-up when it can be resolved.
+        self.owner_url: str = f"tg://user?id={self.owner}"
 
     async def boot(self) -> None:
         """
@@ -102,6 +105,14 @@ class Bot(pyrogram.Client):
                 f"❌ ʙᴏᴛ ɪꜱ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴɪꜱᴛʀᴀᴛᴏʀ ɪɴ ʟᴏɢɢᴇʀ ɢʀᴏᴜᴘ: {self.logger}\n"
                 f"ᴘʟᴇᴀꜱᴇ ᴘʀᴏᴍᴏᴛᴇ ᴛʜᴇ ʙᴏᴛ ᴛᴏ ᴀᴅᴍɪɴɪꜱᴛʀᴀᴛᴏʀ ᴡɪᴛʜ ɴᴇᴄᴇꜱꜱᴀʀʏ ᴘᴇʀᴍɪꜱꜱɪᴏɴꜱ."
             )
+
+        # Owner button link (best effort; the id-based link stays as fallback)
+        try:
+            owner_user = await self.get_users(self.owner)
+            if owner_user.username:
+                self.owner_url = f"https://t.me/{owner_user.username}"
+        except Exception as ex:
+            logger.debug(f"Could not resolve owner username: {ex}")
 
         logger.info(f"🤖 Bot started successfully as @{self.username}")
 
